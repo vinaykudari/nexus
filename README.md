@@ -1,64 +1,87 @@
-LLM Proxy (FastAPI)
+Nexus
 
-Fast, minimal proxy server for OpenAI, Anthropic, and Gemini. Use an `X-API-Key` header or set a provider-specific env var; choose provider via path; send a simple chat payload. Supports optional streaming passthrough.
+Fast, minimal LLM proxy for OpenAI, Anthropic, and Gemini. Choose a provider via the path, send a simple chat payload, and optionally stream responses. Use an `X-API-Key` header or provider-specific env vars.
 
-Endpoints
+Features
 
-- POST `/v1/chat/{provider}`
-  - `provider`: `openai`, `anthropic`, or `gemini`
-  - Auth: either provide `X-API-Key: <provider_api_key>` header, or set env var `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (header takes precedence).
-  - Body (JSON):
-    {
-      "model": "gpt-4o-mini",
-      "messages": [
-        {"role": "system", "content": "You are helpful"},
-        {"role": "user", "content": "Say hi"}
-      ],
-      "stream": false,
-      "max_tokens": 256,
-      "temperature": 0.2
-    }
-
-Multimodal content
-
-- `messages[].content` accepts either a string or an array of parts:
-  - Text part: `{ "type": "text", "text": "Describe this image" }`
-  - Image by URL: `{ "type": "image_url", "url": "https://.../photo.jpg", "mime_type": "image/jpeg" }`
-  - Image by base64: `{ "type": "image_base64", "data": "<BASE64>", "mime_type": "image/png" }`
-
-- OpenAI: image_url and base64 supported via chat content parts.
-- Anthropic: image URL or base64 supported; requires `max_tokens`.
-- Gemini: accepts text, inline images. For `image_url` parts, the proxy fetches and inlines as base64 so you don’t need Google file uploads. API key is passed via query param, no OAuth required.
-
-Non-streaming returns a normalized JSON:
-  {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "content": "Hello!",
-    "content_parts": [
-      {"type":"text","text":"Hello!"}
-    ],
-    "stop_reason": "stop"
-  }
-
-When `stream=true`, the response is Server-Sent Events (`text/event-stream`) with upstream chunks passed through as-is.
+- Multi‑provider: `openai`, `anthropic`, `gemini`
+- Simple auth: `X-API-Key` header or env fallback
+- Streaming passthrough: Server‑Sent Events, upstream chunks forwarded as‑is
+- Multimodal: text, image URLs, inline base64 images
+- Normalized non‑stream responses: consistent `{provider, model, content, content_parts, stop_reason}`
+- Efficient: shared `httpx.AsyncClient` with pooling
 
 Quickstart (uv)
 
 - Python 3.11+
-- Install uv: macOS/Linux `curl -LsSf https://astral.sh/uv/install.sh | sh`, Windows `powershell -c "iwr https://astral.sh/uv/install.ps1 -useb | iex"`
-- Create env + install deps: `uv sync` (creates `.venv` and resolves `pyproject.toml`)
+- Install uv
+  - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - Windows: `powershell -c "iwr https://astral.sh/uv/install.ps1 -useb | iex"`
+- Create env and install deps: `uv sync`
 - Run dev server: `uv run -s dev`
 - Run prod server: `uv run -s start`
-- Health check: `GET /healthz` → `{ "status": "ok" }`
+- Health: `GET /healthz` → `{ "status": "ok" }`
+
+Alternative (pip)
+
+- `python -m venv .venv && source .venv/bin/activate`
+- `pip install -r requirements.txt`
+- `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+
+API
+
+- POST `/v1/chat/{provider}`
+  - `provider`: `openai` | `anthropic` | `gemini`
+  - Auth: `X-API-Key: <provider_api_key>` header, or set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (header wins)
+  - Request body:
+
+```json
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {"role": "system", "content": "You are helpful"},
+    {"role": "user", "content": "Say hi"}
+  ],
+  "stream": false,
+  "max_tokens": 256,
+  "temperature": 0.2
+}
+```
+
+Multimodal Content
+
+- `messages[].content` may be a string or an array of parts:
+  - Text: `{ "type": "text", "text": "Describe this image" }`
+  - Image by URL: `{ "type": "image_url", "url": "https://.../photo.jpg", "mime_type": "image/jpeg" }`
+  - Image by base64: `{ "type": "image_base64", "data": "<BASE64>", "mime_type": "image/png" }`
+- Provider notes:
+  - OpenAI: supports image URL and base64 via content parts
+  - Anthropic: supports image URL/base64; requires `max_tokens`
+  - Gemini: accepts text and inline images; for `image_url`, Nexus fetches and inlines as base64 (no Google uploads needed). API key sent via query param, no OAuth
+
+Responses
+
+- Non‑stream: normalized JSON
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "content": "Hello!",
+  "content_parts": [{"type":"text","text":"Hello!"}],
+  "stop_reason": "stop"
+}
+```
+
+- Stream: `text/event-stream` (SSE), upstream chunks passed through unchanged
 
 Examples
 
-OpenAI (non-stream):
+OpenAI (non‑stream)
 
+```bash
 curl -s \
   -H "Content-Type: application/json" \
-  # Omit header if OPENAI_API_KEY is set in the environment
   -H "X-API-Key: $OPENAI_API_KEY" \
   -X POST http://localhost:8000/v1/chat/openai \
   -d '{
@@ -66,12 +89,13 @@ curl -s \
     "messages":[{"role":"user","content":"Hello!"}],
     "stream": false
   }' | jq
+```
 
-OpenAI (stream):
+OpenAI (stream)
 
+```bash
 curl -N \
   -H "Content-Type: application/json" \
-  # Omit header if OPENAI_API_KEY is set in the environment
   -H "X-API-Key: $OPENAI_API_KEY" \
   -X POST http://localhost:8000/v1/chat/openai \
   -d '{
@@ -79,12 +103,13 @@ curl -N \
     "messages":[{"role":"user","content":"Stream please"}],
     "stream": true
   }'
+```
 
-Anthropic (non-stream):
+Anthropic (non‑stream)
 
+```bash
 curl -s \
   -H "Content-Type: application/json" \
-  # Omit header if ANTHROPIC_API_KEY is set in the environment
   -H "X-API-Key: $ANTHROPIC_API_KEY" \
   -X POST http://localhost:8000/v1/chat/anthropic \
   -d '{
@@ -93,9 +118,11 @@ curl -s \
     "max_tokens": 256,
     "stream": false
   }' | jq
+```
 
-OpenAI multimodal (image URL):
+OpenAI multimodal (image URL)
 
+```bash
 curl -s \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $OPENAI_API_KEY" \
@@ -110,12 +137,13 @@ curl -s \
     ],
     "stream": false
   }' | jq
+```
 
-Gemini multimodal (image URL):
+Gemini multimodal (image URL)
 
+```bash
 curl -s \
   -H "Content-Type: application/json" \
-  # Omit header if GEMINI_API_KEY is set in the environment
   -H "X-API-Key: $GEMINI_API_KEY" \
   -X POST http://localhost:8000/v1/chat/gemini \
   -d '{
@@ -129,14 +157,7 @@ curl -s \
     ],
     "stream": false
   }' | jq
-
-Notes & Design Choices
-
-- Provider as path param: `/v1/chat/{provider}` keeps body stable and allows simple routing and auth header mapping.
-- API key header: Prefer `X-API-Key`, or set env var fallback per provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). The proxy maps this to provider-specific auth (`Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic, query param `key` for Gemini).
-- Efficiency: single shared `httpx.AsyncClient` with connection pooling; streaming uses `StreamingResponse` and passes upstream SSE bytes through.
-- Minimal normalization: for non-stream responses, returns a small, common shape `{provider, model, content, stop_reason}`. Raw upstream payloads can be added later if needed.
-- Error handling: upstream HTTP errors are surfaced with the same status code and parsed body when available; network errors return `502`.
+```
 
 Configuration
 
@@ -145,9 +166,9 @@ Configuration
   - `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_VERSION`, `GEMINI_BASE_URL`
   - API keys (optional if you pass header): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`
 
-Consuming images
+Consuming Images
 
-When models return image data (e.g., Gemini), non-stream responses include `content_parts` with `{ "type":"image_base64", "mime_type":"...", "data":"<BASE64>" }` entries. Decode the base64 to get the binary. For example (Python):
+When models return image data (e.g., Gemini), non‑stream responses include `content_parts` entries like `{ "type":"image_base64", "mime_type":"...", "data":"<BASE64>" }`. Example (Python):
 
 ```python
 import base64
@@ -158,14 +179,13 @@ for part in resp_json.get("content_parts", []):
         Path("output.png").write_bytes(base64.b64decode(part["data"]))
 ```
 
+Design Notes
+
+- Provider as path param: stable body, simple routing and auth mapping
+- Auth mapping: `X-API-Key` → provider auth (`Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic, `key` query param for Gemini)
+- Streaming: FastAPI `StreamingResponse`; forwards upstream SSE bytes untouched
+- Errors: upstream HTTP errors bubbled with original status; network errors return `502`
+
 Extending Providers
 
-- Add a new class implementing `ChatProvider` in `app/clients/` and wire it in `app/api.py`’s factory.
-
-Alternative (pip)
-
-If you prefer pip, a `requirements.txt` is included.
-
-- `python -m venv .venv && source .venv/bin/activate`
-- `pip install -r requirements.txt`
-- `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+- Implement `ChatProvider` in `app/clients/` and register via the factory in `app/api.py`.
