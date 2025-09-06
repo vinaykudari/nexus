@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 from pathlib import Path
 import re
 from typing import Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath, BackgroundTasks
 from fastapi.responses import Response
 
 from .deps import get_async_client
@@ -34,6 +36,7 @@ async def _require_google_api_key(x_api_key: str | None = Header(default=None, a
 
 @router.post("/apply")
 async def apply(
+    background_tasks: BackgroundTasks,
     prompt: str = Form(...),
     image: UploadFile = File(...),
     model: str = Form("gemini-2.5-flash-image-preview"),
@@ -71,22 +74,24 @@ async def apply(
     if _rules_text:
         payload["systemInstruction"] = {"parts": [{"text": _rules_text}]}
 
-    gen_cfg: dict = {"candidateCount": int(number_of_images)}
+    gen_cfg: dict = {}
     if aspect_ratio:
         gen_cfg["aspectRatio"] = aspect_ratio
     if gen_cfg:
         payload["generationConfig"] = gen_cfg
 
-    # Call Gemini API
+    # Generate first image immediately
     url = f"{settings.gemini_base_url}/models/{model}:generateContent"
     params = {"key": api_key}
+    logging.info(f"Requesting first image from Gemini API")
     resp = await client.post(url, json=payload, params=params)
     resp.raise_for_status()
     data_json = resp.json()
-
-    # Extract inlineData images from all candidates
-    images: list[tuple[bytes, str]] = []  # (bytes, mime)
-    for cand in (data_json.get("candidates") or []):
+    
+    # Extract first image
+    first_image = None
+    candidates = data_json.get("candidates") or []
+    for cand in candidates:
         content = cand.get("content") or {}
         for p in (content.get("parts") or []):
             inline = p.get("inlineData") if isinstance(p, dict) else None
@@ -95,14 +100,20 @@ async def apply(
                 pdata = inline.get("data")
                 if isinstance(pdata, str):
                     try:
-                        images.append((base64.b64decode(pdata), pmime))
+                        first_image = (base64.b64decode(pdata), pmime)
+                        break
                     except Exception:
                         continue
-
-    if not images:
+        if first_image:
+            break
+    
+    if not first_image:
+        logging.error(f"No image extracted from API response. Full response: {data_json}")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No image returned")
+    
+    logging.info(f"Successfully extracted first image")
 
-    # Persist images under assets/images/<request_id>/<n>.<ext>
+    # Setup output directory
     root = Path(__file__).resolve().parents[1]  # repo root
     out_dir = root / "assets" / "images" / request_id
     
@@ -124,13 +135,97 @@ async def apply(
             return ".gif"
         return ".png"
 
-    for idx, (ibytes, imime) in enumerate(images, start=1):
-        ext = _ext_for_mime(imime)
-        (out_dir / f"{idx}{ext}").write_bytes(ibytes)
+    # Save first image immediately
+    first_bytes, first_mime = first_image
+    ext = _ext_for_mime(first_mime)
+    file_path = out_dir / f"1{ext}"
+    file_path.write_bytes(first_bytes)
+    logging.info(f"Saved first image to {file_path} ({len(first_bytes)} bytes, {first_mime})")
+    
+    # If more images requested, generate them in background
+    if number_of_images > 1:
+        background_tasks.add_task(
+            _generate_additional_images,
+            number_of_images - 1,
+            payload,
+            url,
+            params,
+            out_dir,
+            _ext_for_mime,
+            client
+        )
+        logging.info(f"Scheduled {number_of_images - 1} additional images for background generation")
 
     # Return the first image immediately
-    first_bytes, first_mime = images[0]
     return Response(content=first_bytes, media_type=first_mime)
+
+
+async def _generate_additional_images(
+    count: int,
+    payload: dict,
+    url: str,
+    params: dict,
+    out_dir: Path,
+    ext_for_mime_func,
+    client
+):
+    """Generate additional images in background and save them to disk."""
+    try:
+        # Create concurrent tasks for remaining images
+        tasks = []
+        for i in range(count):
+            task = asyncio.create_task(_generate_single_image(payload, url, params, client))
+            tasks.append(task)
+        
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Save successful results
+        saved_count = 0
+        for i, result in enumerate(results, start=2):  # Start from 2 since 1 is already saved
+            if isinstance(result, Exception):
+                logging.error(f"Failed to generate image {i}: {result}")
+                continue
+            
+            if result:
+                image_bytes, mime_type = result
+                ext = ext_for_mime_func(mime_type)
+                file_path = out_dir / f"{i}{ext}"
+                file_path.write_bytes(image_bytes)
+                saved_count += 1
+                logging.info(f"Saved background image {i} to {file_path} ({len(image_bytes)} bytes, {mime_type})")
+        
+        logging.info(f"Background generation completed: {saved_count}/{count} additional images saved")
+        
+    except Exception as e:
+        logging.error(f"Error in background image generation: {e}")
+
+
+async def _generate_single_image(payload: dict, url: str, params: dict, client) -> tuple[bytes, str] | None:
+    """Generate a single image and return the bytes and mime type."""
+    try:
+        resp = await client.post(url, json=payload, params=params)
+        resp.raise_for_status()
+        data_json = resp.json()
+        
+        # Extract image from response
+        candidates = data_json.get("candidates") or []
+        for cand in candidates:
+            content = cand.get("content") or {}
+            for p in (content.get("parts") or []):
+                inline = p.get("inlineData") if isinstance(p, dict) else None
+                if isinstance(inline, dict):
+                    pmime = inline.get("mimeType") or "image/png"
+                    pdata = inline.get("data")
+                    if isinstance(pdata, str):
+                        try:
+                            return (base64.b64decode(pdata), pmime)
+                        except Exception:
+                            continue
+        return None
+    except Exception as e:
+        logging.error(f"Failed to generate single image: {e}")
+        return None
 
 
 @public_router.get("/{request_id}/{image_id}")
