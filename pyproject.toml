@@ -18,6 +18,9 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "python-multipart>=0.0.20",
   "google-genai>=0.3.0",
+  "svglib>=1.5.0",
+  "reportlab>=4.0.0",
+  "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -33,9 +36,6 @@ nexus = "app.main:app"
 [tool.uv]
 dev-dependencies = ["nexus[dev]"]
 
-[tool.uv.scripts]
-dev = "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
-start = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

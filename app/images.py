@@ -7,13 +7,14 @@ from pathlib import Path
 import re
 from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath, BackgroundTasks
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 
 from .deps import get_async_client
 from .models import ChatMessage, ChatRequest, ImageBase64Part, TextPart
 from .clients.gemini_client import GeminiProvider
 from .clients.veo_client import VeoClient
 from .config import settings
+from .prompts import VIBE_CODING_SYSTEM_PROMPT
 
 
 router = APIRouter(prefix="/v1/images", tags=["images"])
@@ -24,6 +25,8 @@ _rules_path = Path(__file__).with_name("rules.md")
 _rules_text = _rules_path.read_text(encoding="utf-8") if _rules_path.exists() else ""
 _video_rules_path = Path(__file__).with_name("rules_video.md")
 _video_rules_text = _video_rules_path.read_text(encoding="utf-8") if _video_rules_path.exists() else ""
+
+
 
 
 async def _require_google_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> str:
@@ -135,12 +138,18 @@ async def apply(
             return ".gif"
         return ".png"
 
-    # Save first image immediately
+    # Save original image as "original.{ext}"
+    original_ext = _ext_for_mime(mime)
+    original_path = out_dir / f"original{original_ext}"
+    original_path.write_bytes(data)
+    logging.info(f"Saved original image to {original_path} ({len(data)} bytes, {mime})")
+    
+    # Save first generated image immediately
     first_bytes, first_mime = first_image
     ext = _ext_for_mime(first_mime)
     file_path = out_dir / f"1{ext}"
     file_path.write_bytes(first_bytes)
-    logging.info(f"Saved first image to {file_path} ({len(first_bytes)} bytes, {first_mime})")
+    logging.info(f"Saved first generated image to {file_path} ({len(first_bytes)} bytes, {first_mime})")
     
     # If more images requested, generate them in background
     if number_of_images > 1:
@@ -158,6 +167,179 @@ async def apply(
 
     # Return the first image immediately
     return Response(content=first_bytes, media_type=first_mime)
+
+
+@router.post("/prompt")
+async def generate_prompt(
+    request_id: str = Form(..., description="Request ID of already generated images"),
+    image_id: int = Form(1, description="Image ID to analyze (defaults to 1)"),
+    api_key: str = Depends(_require_google_api_key),
+    client=Depends(get_async_client),
+):
+    """Generate a prompt for vibe coding based on a previously generated image."""
+    
+    # Sanitize request_id
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
+    
+    # Find the images directory
+    root = Path(__file__).resolve().parents[1]
+    base = root / "assets" / "images" / request_id
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+
+    # Find original image
+    exts = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+    original_path: Optional[Path] = None
+    for ext in exts:
+        p = base / f"original{ext}"
+        if p.exists() and p.is_file():
+            original_path = p
+            break
+    if original_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original image not found")
+    
+    # Find generated image
+    generated_path: Optional[Path] = None
+    for ext in exts:
+        p = base / f"{image_id}{ext}"
+        if p.exists() and p.is_file():
+            generated_path = p
+            break
+    if generated_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generated image not found")
+    
+    # Read and encode both images
+    original_data = original_path.read_bytes()
+    original_b64 = base64.b64encode(original_data).decode("ascii")
+    original_ext = original_path.suffix.lower()
+    
+    generated_data = generated_path.read_bytes()
+    generated_b64 = base64.b64encode(generated_data).decode("ascii")
+    generated_ext = generated_path.suffix.lower()
+    
+    # Determine MIME types
+    mime_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    original_mime = mime_map.get(original_ext, "image/png")
+    generated_mime = mime_map.get(generated_ext, "image/png")
+    
+    # Use system prompt from prompts.py
+    
+    # Build user message with both images
+    user_parts = [
+        {"text": "Here is the original image (reference):"},
+        {"inlineData": {"mimeType": original_mime, "data": original_b64}},
+        {"text": "Here is the generated/updated image:"},
+        {"inlineData": {"mimeType": generated_mime, "data": generated_b64}},
+        {"text": "Analyze both images and provide implementation instructions and changes made. If any custom assets are needed (icons, graphics), generate them as actual images - do not include SVG code or asset descriptions in the text response."},
+    ]
+    
+    payload = {
+        "contents": [{"role": "user", "parts": user_parts}],
+        "systemInstruction": {"parts": [{"text": VIBE_CODING_SYSTEM_PROMPT}]},
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 4096
+        }
+    }
+    
+    # Use Gemini 2.5 Flash Image for image generation capability
+    model = "gemini-2.5-flash-image-preview"
+    url = f"{settings.gemini_base_url}/models/{model}:generateContent"
+    params = {"key": api_key}
+    
+    logging.info(f"Generating prompt using {model}")
+    resp = await client.post(url, json=payload, params=params)
+    resp.raise_for_status()
+    data_json = resp.json()
+    
+    # Extract both text and images from response
+    generated_text = None
+    generated_assets = []
+    
+    candidates = data_json.get("candidates") or []
+    for cand in candidates:
+        content = cand.get("content") or {}
+        for part in (content.get("parts") or []):
+            if "text" in part:
+                generated_text = part["text"]
+            elif "inlineData" in part:
+                # Extract generated asset images
+                inline_data = part["inlineData"]
+                asset_mime = inline_data.get("mimeType", "image/png")
+                asset_data = inline_data.get("data")
+                if asset_data:
+                    try:
+                        asset_bytes = base64.b64decode(asset_data)
+                        generated_assets.append({
+                            "data": asset_data,
+                            "mimeType": asset_mime,
+                            "size": len(asset_bytes)
+                        })
+                    except Exception as e:
+                        logging.warning(f"Failed to decode asset: {e}")
+    
+    if not generated_text:
+        logging.error(f"No text generated from API response: {data_json}")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No instructions generated")
+    
+    # SVG conversion logic removed - now relying on direct PNG generation from AI
+    
+    # Save generated assets to the request directory and prepare for response
+    response_assets = []
+    if generated_assets:
+        assets_dir = base / "assets"
+        
+        # Clear existing assets for this request_id to ensure clean replacement
+        if assets_dir.exists():
+            for existing_file in assets_dir.glob("*"):
+                if existing_file.is_file():
+                    existing_file.unlink()
+        
+        assets_dir.mkdir(exist_ok=True)
+        
+        for idx, asset in enumerate(generated_assets, start=1):
+            # Determine file extension from MIME type
+            ext_map = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/webp": ".webp",
+                "image/gif": ".gif",
+                "image/svg+xml": ".svg"
+            }
+            ext = ext_map.get(asset["mimeType"], ".png")
+            asset_path = assets_dir / f"asset_{idx}{ext}"
+            
+            try:
+                asset_bytes = base64.b64decode(asset["data"])
+                
+                asset_path.write_bytes(asset_bytes)
+                
+                # Include both asset data and path in response
+                response_assets.append({
+                    "filename": f"asset_{idx}{ext}",
+                    "data": asset["data"],  # Base64 encoded data
+                    "path": str(asset_path),  # Full file path
+                    "mimeType": asset["mimeType"],
+                    "size": len(asset_bytes)
+                })
+                logging.info(f"Saved generated asset to {asset_path}")
+            except Exception as e:
+                logging.error(f"Failed to save asset {idx}: {e}")
+    
+    logging.info(f"Generated instructions ({len(generated_text)} characters) with {len(response_assets)} assets")
+    
+    return JSONResponse(content={
+        "instructions": generated_text,
+        "model": model,
+        "assets": response_assets
+    })
 
 
 async def _generate_additional_images(
