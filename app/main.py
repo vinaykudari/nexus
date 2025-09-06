@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 import httpx
 
 from .api import router as api_router
+from .images import router as images_router
 
 
 class _SkipHealthzAccessFilter(logging.Filter):
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(api_router)
+    app.include_router(images_router)
 
     @app.exception_handler(httpx.HTTPStatusError)
     async def upstream_status_error_handler(_req, exc: httpx.HTTPStatusError):
