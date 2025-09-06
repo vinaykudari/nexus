@@ -2,7 +2,7 @@ name: Deploy API
 
 on:
   push:
-    branches: ["*"]
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
@@ -52,4 +52,3 @@ jobs:
           echo "Redeploying ${SERVICE_NAME} with image ${REGISTRY_IMAGE}:${BRANCH_NAME}"
           # Assumes the Koyeb service ${SERVICE_NAME} is already configured to use this image tag
           koyeb service redeploy "${SERVICE_NAME}" --token "${KOYEB_TOKEN}"
-
