@@ -372,7 +372,17 @@ async def codegen_health() -> HealthResponse:
     )
 
 
-@public_router.get("/{request_id}")
+@public_router.get(
+    "/{request_id}",
+    summary="Serve Generated HTML File",
+    description="Serve generated HTML file directly in the browser for viewing.",
+    responses={
+        200: {"description": "Generated HTML file", "content": {"text/html": {}}},
+        400: {"description": "Invalid request_id format"},
+        404: {"description": "HTML file not found"}
+    },
+    tags=["Code Generation - Public"]
+)
 async def serve_html_file(
     request_id: str = Path(..., description="Request identifier for the generated code"),
 ):
@@ -396,7 +406,17 @@ async def serve_html_file(
     return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
 
 
-@public_router.get("/{request_id}/code")
+@public_router.get(
+    "/{request_id}/code",
+    summary="Serve Generated Code as Text",
+    description="Serve generated code file as plain text for viewing or downloading.",
+    responses={
+        200: {"description": "Generated code as plain text", "content": {"text/plain": {}}},
+        400: {"description": "Invalid request_id format"},
+        404: {"description": "Code file not found"}
+    },
+    tags=["Code Generation - Public"]
+)
 async def serve_code_file(
     request_id: str = Path(..., description="Request identifier for the generated code"),
 ):
