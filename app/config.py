@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None  # env: ANTHROPIC_API_KEY
     gemini_api_key: str | None = None  # env: GEMINI_API_KEY
 
+    # Base URL for serving generated content
+    base_url: str = "http://localhost:9000"  # env: BASE_URL
+
     # CORS: kept fully open in app.main (no config needed for hackathon)
 
     class Config:

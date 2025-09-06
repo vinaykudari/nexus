@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import tempfile
+import os
 from pathlib import Path
 import re
 from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath, BackgroundTasks
 from fastapi.responses import Response, JSONResponse
+from google import genai
 
 from .deps import get_async_client
 from .models import ChatMessage, ChatRequest, ImageBase64Part, TextPart
@@ -403,6 +406,182 @@ async def _generate_single_image(payload: dict, url: str, params: dict, client) 
     except Exception as e:
         logging.error(f"Failed to generate single image: {e}")
         return None
+
+
+@router.post("/to-html")
+async def image_to_html(
+    image: UploadFile = File(...),
+    request_id: str = Form(..., description="Client-supplied request identifier for HTML file grouping"),
+    model: str = Form("gemini-2.5-pro", description="AI model to use for HTML generation"),
+    api_key: str = Depends(_require_google_api_key),
+):
+    """Convert an image to HTML that looks exactly like the image using Google Generative AI."""
+    
+    # Sanitize request_id to avoid path traversal or unsafe characters
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
+
+    # Validate image file
+    if not image.content_type or not image.content_type.startswith('image/'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image (JPEG, PNG, WEBP, etc.)"
+        )
+
+    # Read and validate image data
+    try:
+        data = await image.read()
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty image file"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to read image file: {str(e)}"
+        )
+
+    # Create the prompt for HTML generation
+    html_generation_prompt = """
+Analyze this image and generate complete, production-ready HTML and CSS code that recreates the design shown.
+
+Requirements:
+1. Generate semantic HTML5 structure with embedded CSS in <style> tags
+2. Match colors, fonts, layout, spacing, and visual elements exactly
+3. Use modern CSS techniques (flexbox, grid, etc.) for responsive design
+4. Include all text content visible in the image
+5. Recreate any buttons, forms, images, or interactive elements as static HTML
+6. Use appropriate semantic HTML elements
+7. Ensure the result is a complete, standalone HTML file that can be opened in a browser
+8. Add subtle hover effects and micro-interactions where appropriate
+9. Ensure accessibility (proper alt texts, ARIA labels, semantic markup)
+10. Use clean, well-commented code
+
+Return ONLY the complete HTML document with embedded CSS.
+Do not include any explanations, markdown formatting, or code blocks - just the raw HTML.
+"""
+
+    # Create temporary file for Google File API
+    temp_file_path = None
+    uploaded_file = None
+    
+    try:
+        # Create temporary file for Google File API upload
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{image.filename.split('.')[-1] if image.filename else 'jpg'}") as temp_file:
+            temp_file.write(data)
+            temp_file_path = temp_file.name
+        
+        # Initialize Google genai client
+        client = genai.Client(api_key=api_key)
+        
+        # Upload file to Google File API
+        logging.info(f"Uploading image file to Google File API")
+        uploaded_file = client.files.upload(file=temp_file_path)
+        
+        logging.info(f"Generating HTML from image using {model}")
+        
+        # Generate content using the uploaded file
+        response = client.models.generate_content(
+            model=model,
+            contents=[uploaded_file, html_generation_prompt]
+        )
+        
+        if not response.text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Empty response from the model"
+            )
+        
+        # Clean up the generated HTML (remove markdown code blocks if present)
+        generated_html = response.text.strip()
+        lines = generated_html.split('\n')
+        if lines[0].strip().startswith('```'):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith('```'):
+            lines = lines[:-1]
+        
+        html_content = '\n'.join(lines).strip()
+        
+        # Setup output directory
+        root = Path(__file__).resolve().parents[1]  # repo root
+        html_dir = root / "assets" / "html" / request_id
+        html_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Clear existing HTML files for this request_id to ensure clean replacement
+        if html_dir.exists():
+            for existing_file in html_dir.glob("*.html"):
+                if existing_file.is_file():
+                    existing_file.unlink()
+        
+        # Save the HTML file
+        html_filename = f"generated_{request_id}.html"
+        html_path = html_dir / html_filename
+        html_path.write_text(html_content, encoding="utf-8")
+        
+        logging.info(f"Generated HTML saved to {html_path} ({len(html_content)} characters)")
+        
+        # Return the file path and some metadata
+        return JSONResponse(content={
+            "html_path": f"{settings.base_url}/html/{request_id}",
+            "file_path": str(html_path),
+            "relative_path": f"assets/html/{request_id}/{html_filename}",
+            "filename": html_filename,
+            "size": len(html_content),
+            "model": model,
+            "message": "HTML file generated successfully. You can open it in a browser to view the result.",
+            "view_url": f"/html/{request_id}"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error during HTML generation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"HTML generation failed: {str(e)}"
+        )
+    
+    finally:
+        # Clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as e:
+                logging.warning(f"Failed to clean up temp file: {e}")
+        
+        # Clean up uploaded file from Google
+        if uploaded_file:
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except Exception as e:
+                logging.warning(f"Failed to clean up uploaded file: {e}")
+
+
+# Public HTML router for serving generated HTML files
+html_router = APIRouter(prefix="/html", tags=["html"])
+
+@html_router.get("/{request_id}")
+async def get_html(
+    request_id: str = FPath(..., description="Request identifier used during HTML generation"),
+):
+    """Serve the generated HTML file for viewing in browser."""
+    # Sanitize request_id
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
+
+    root = Path(__file__).resolve().parents[1]
+    html_dir = root / "assets" / "html" / request_id
+    if not html_dir.exists() or not html_dir.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML request not found")
+
+    # Look for the generated HTML file
+    html_filename = f"generated_{request_id}.html"
+    html_path = html_dir / html_filename
+    
+    if not html_path.exists() or not html_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML file not found")
+
+    html_content = html_path.read_text(encoding="utf-8")
+    return Response(content=html_content, media_type="text/html")
 
 
 @public_router.get("/{request_id}/{image_id}")
