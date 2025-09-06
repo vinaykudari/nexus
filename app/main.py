@@ -9,7 +9,7 @@ import httpx
 
 from .api import router as api_router
 from .images import router as images_router, public_router as images_public_router
-from .codegen import router as codegen_router
+from .codegen import router as codegen_router, public_router as codegen_public_router
 
 
 class _SkipHealthzAccessFilter(logging.Filter):
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     # Public image fetcher: /images/<request-id>/<image-id>
     app.include_router(images_public_router)
     app.include_router(codegen_router)
+    app.include_router(codegen_public_router)
 
     @app.exception_handler(httpx.HTTPStatusError)
     async def upstream_status_error_handler(_req, exc: httpx.HTTPStatusError):

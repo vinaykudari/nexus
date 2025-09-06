@@ -4,11 +4,11 @@ import base64
 import logging
 import tempfile
 import os
-from pathlib import Path
+from pathlib import Path as PathLib
 from typing import Dict, Any, Literal
 from enum import Enum
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from google import genai
@@ -27,6 +27,8 @@ class CodeGenerationResponse(BaseModel):
     code_type: CodeType = Field(..., description="Type of code generated")
     model: str = Field(..., description="The AI model used for generation")
     message: str = Field(..., description="Status message")
+    request_id: str = Field(..., description="Request ID to access the generated file")
+    web_url: str = Field(..., description="URL to view the generated HTML file")
     stats: Dict[str, int] = Field(..., description="Statistics about the generated code")
 
 class CodeGenerationStats(BaseModel):
@@ -50,6 +52,9 @@ router = APIRouter(
         503: {"description": "Service Unavailable - AI service is down"}
     }
 )
+
+# Public router for serving generated HTML files
+public_router = APIRouter(prefix="/codegen", tags=["Code Generation - Public"])
 
 async def _require_google_api_key() -> str:
     """Get Google API key from settings"""
@@ -110,6 +115,11 @@ async def generate_code_from_image(
         description="Image file (JPEG, PNG, WebP, GIF) up to 10MB",
         example="design-screenshot.png"
     ),
+    request_id: str = Form(
+        ..., 
+        description="Client-supplied request identifier for file organization",
+        example="codegen_123456789"
+    ),
     model: str = Form(
         "gemini-2.0-flash-exp", 
         description="AI model to use for code generation",
@@ -122,6 +132,14 @@ async def generate_code_from_image(
     ),
     api_key: str = Depends(_require_google_api_key),
 ) -> CodeGenerationResponse:
+    
+    # Validate request_id to avoid path traversal or unsafe characters
+    if not request_id or not request_id.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="request_id is required")
+    
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
     
     # Validate image file
     if not image.content_type or not image.content_type.startswith('image/'):
@@ -247,12 +265,53 @@ async def generate_code_from_image(
         
         logging.info(f"Successfully generated {len(cleaned_code)} characters of {prompt_type} code")
         
+        # Setup output directory
+        root = PathLib(__file__).resolve().parents[1]  # repo root
+        out_dir = root / "assets" / "codegen" / request_id
+        
+        # Clear existing files for this request_id to ensure clean replacement
+        if out_dir.exists():
+            for existing_file in out_dir.glob("*"):
+                if existing_file.is_file():
+                    existing_file.unlink()
+        
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the original image
+        image_ext = image.filename.split('.')[-1] if image.filename and '.' in image.filename else 'jpg'
+        image_path = out_dir / f"original.{image_ext}"
+        image_path.write_bytes(data)
+        logging.info(f"Saved original image to {image_path}")
+
+        # Save the generated code file
+        if prompt_type == "html":
+            code_file = out_dir / "index.html"
+        elif prompt_type == "react":
+            code_file = out_dir / "component.jsx"
+        elif prompt_type == "vue":
+            code_file = out_dir / "component.vue"
+        else:
+            code_file = out_dir / f"code.{prompt_type}"
+            
+        code_file.write_text(cleaned_code, encoding='utf-8')
+        logging.info(f"Saved generated code to {code_file}")
+
+        # Generate web URL based on your domain
+        # For HTML files, we can serve them directly
+        if prompt_type == "html":
+            web_url = f"https://awake-lauraine-vinaykudari-b9455624.koyeb.app/codegen/{request_id}"
+        else:
+            # For React/Vue, provide a link to view the raw code
+            web_url = f"https://awake-lauraine-vinaykudari-b9455624.koyeb.app/codegen/{request_id}/code"
+        
         return CodeGenerationResponse(
             success=True,
             code=cleaned_code,
             code_type=prompt_type,
             model=model,
             message=f"Successfully generated {prompt_type} code from image",
+            request_id=request_id,
+            web_url=web_url,
             stats={
                 "code_length": len(cleaned_code),
                 "line_count": len(cleaned_code.split('\n'))
@@ -311,3 +370,65 @@ async def codegen_health() -> HealthResponse:
         supported_models=["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
         supported_types=["html", "react", "vue"]
     )
+
+
+@public_router.get("/{request_id}")
+async def serve_html_file(
+    request_id: str = Path(..., description="Request identifier for the generated code"),
+):
+    """Serve generated HTML file directly in the browser."""
+    import re
+    # Sanitize request_id
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
+
+    root = PathLib(__file__).resolve().parents[1]
+    base = root / "assets" / "codegen" / request_id
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+
+    # Try to find the HTML file
+    html_file = base / "index.html"
+    if not html_file.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML file not found")
+
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+
+
+@public_router.get("/{request_id}/code")
+async def serve_code_file(
+    request_id: str = Path(..., description="Request identifier for the generated code"),
+):
+    """Serve generated code file as plain text."""
+    import re
+    # Sanitize request_id
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
+
+    root = PathLib(__file__).resolve().parents[1]
+    base = root / "assets" / "codegen" / request_id
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+
+    # Try to find code files in order of preference
+    possible_files = ["index.html", "component.jsx", "component.vue"]
+    code_file = None
+    
+    for filename in possible_files:
+        file_path = base / filename
+        if file_path.exists():
+            code_file = file_path
+            break
+    
+    if not code_file:
+        # Look for any other code files
+        code_files = list(base.glob("code.*"))
+        if code_files:
+            code_file = code_files[0]
+    
+    if not code_file:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code file not found")
+
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=code_file.read_text(encoding='utf-8'))
