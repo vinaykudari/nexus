@@ -1,7 +1,7 @@
 UI Component Transformation Rules
 
 Goal
-- Given a screenshot/crop of a UI component from a website or app and a short instruction, produce media that can replace the selection 1:1.
+- Given a screenshot/crop of a UI component from a website or app and a short instruction, produce media that can replace the selection 1:1 in the same style
 
 Canvas & Structure
 - Preserve the exact canvas width, height, and aspect ratio of the input.
