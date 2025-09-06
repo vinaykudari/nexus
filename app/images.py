@@ -8,6 +8,7 @@ from fastapi.responses import Response
 from .deps import get_async_client
 from .models import ChatMessage, ChatRequest, ImageBase64Part, TextPart
 from .clients.gemini_client import GeminiProvider
+from .clients.veo_client import VeoClient
 from .config import settings
 
 
@@ -15,9 +16,11 @@ router = APIRouter(prefix="/v1/images", tags=["images"])
 
 _rules_path = Path(__file__).with_name("rules.md")
 _rules_text = _rules_path.read_text(encoding="utf-8") if _rules_path.exists() else ""
+_video_rules_path = Path(__file__).with_name("rules_video.md")
+_video_rules_text = _video_rules_path.read_text(encoding="utf-8") if _video_rules_path.exists() else ""
 
 
-async def _require_gemini_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> str:
+async def _require_google_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> str:
     if x_api_key:
         return x_api_key
     if settings.gemini_api_key:
@@ -30,7 +33,8 @@ async def apply(
     prompt: str = Form(...),
     image: UploadFile = File(...),
     model: str = Form("gemini-2.5-flash-image-preview"),
-    api_key: str = Depends(_require_gemini_api_key),
+    video_model: str = Form("veo-3.0-fast-generate-001"),
+    api_key: str = Depends(_require_google_api_key),
     client=Depends(get_async_client),
 ):
     data = await image.read()
@@ -38,6 +42,7 @@ async def apply(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image upload")
     b64 = base64.b64encode(data).decode("ascii")
     mime = image.content_type or "image/png"
+   
     messages: list[ChatMessage] = []
     if _rules_text:
         messages.append(ChatMessage(role="system", content=_rules_text))

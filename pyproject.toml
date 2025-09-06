@@ -17,6 +17,7 @@ dependencies = [
   "pydantic-settings>=2.3.0",
   "python-dotenv>=1.0.1",
   "python-multipart>=0.0.20",
+  "google-genai>=0.3.0",
 ]
 
 [project.optional-dependencies]
