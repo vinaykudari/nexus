@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -8,8 +9,19 @@ import httpx
 from .api import router as api_router
 
 
+class _SkipHealthzAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return "/healthz" not in msg
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="LLM Proxy", version="0.1.0")
+    app = FastAPI(title="Nexus", version="0.1.0")
+
+    logging.getLogger("uvicorn.access").addFilter(_SkipHealthzAccessFilter())
 
     @app.get("/healthz", tags=["system"])  # simple liveness
     async def healthz():
