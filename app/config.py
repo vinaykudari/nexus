@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None  # env: ANTHROPIC_API_KEY
     gemini_api_key: str | None = None  # env: GEMINI_API_KEY
 
+    # CORS: kept fully open in app.main (no config needed for hackathon)
+
     class Config:
         env_file = ".env"
 

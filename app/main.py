@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
 
 from .api import router as api_router
-from .images import router as images_router
+from .images import router as images_router, public_router as images_public_router
 
 
 class _SkipHealthzAccessFilter(logging.Filter):
@@ -24,12 +25,25 @@ def create_app() -> FastAPI:
 
     logging.getLogger("uvicorn.access").addFilter(_SkipHealthzAccessFilter())
 
+    # CORS for browser-based clients (e.g., pixie on Vercel)
+    # Allowed origins are configured via settings (env) with a permissive default
+    # For the hackathon, keep CORS fully open
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/healthz", tags=["system"])  # simple liveness
     async def healthz():
         return {"status": "ok"}
 
     app.include_router(api_router)
     app.include_router(images_router)
+    # Public image fetcher: /images/<request-id>/<image-id>
+    app.include_router(images_public_router)
 
     @app.exception_handler(httpx.HTTPStatusError)
     async def upstream_status_error_handler(_req, exc: httpx.HTTPStatusError):

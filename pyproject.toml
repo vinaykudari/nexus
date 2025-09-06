@@ -33,6 +33,10 @@ nexus = "app.main:app"
 [tool.uv]
 dev-dependencies = ["nexus[dev]"]
 
+[tool.uv.scripts]
+dev = "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+start = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
