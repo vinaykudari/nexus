@@ -51,6 +51,9 @@ async def apply(
     api_key: str = Depends(_require_google_api_key),
     client=Depends(get_async_client),
 ):
+    # Log request parameters (excluding image data and API key)
+    logging.info(f"/apply endpoint called with parameters: prompt='{prompt}', model={model}, video_model={video_model}, request_id={request_id}, aspect_ratio={aspect_ratio}, number_of_images={number_of_images}, image_filename={image.filename}, image_content_type={image.content_type}")
+    
     # Sanitize request_id to avoid path traversal or unsafe characters
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
@@ -178,6 +181,9 @@ async def generate_prompt(
     client=Depends(get_async_client),
 ):
     """Generate a prompt for vibe coding based on a previously generated image."""
+    
+    # Log request parameters (excluding sensitive data)
+    logging.info(f"/prompt endpoint called with parameters: request_id={request_id}, image_id={image_id}")
     
     # Sanitize request_id
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
