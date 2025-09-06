@@ -7,24 +7,26 @@ from fastapi import HTTPException, status
 
 from ..config import settings
 from ..models import ChatRequest
+from ..utils.content import normalize_message_content, to_anthropic_content_blocks, parts_from_anthropic_content
 from .base import ChatProvider
 
 
 def _to_anthropic_messages(req: ChatRequest) -> Dict[str, Any]:
-    system = None
+    system_text = None
     messages = []
     for m in req.messages:
         if m.role == "system":
-            # Anthropic uses top-level system, keep last one
-            system = m.content
+            # Anthropic uses top-level system text
+            # Only take text parts from system
+            parts = normalize_message_content(m.content)
+            system_text = "".join([p.text for p in parts if getattr(p, "type", None) == "text"]) or ""
         elif m.role in ("user", "assistant"):
-            messages.append({"role": m.role, "content": m.content})
-    payload: Dict[str, Any] = {
-        "model": req.model,
-        "messages": messages,
-    }
-    if system:
-        payload["system"] = system
+            parts = normalize_message_content(m.content)
+            blocks = to_anthropic_content_blocks(parts)
+            messages.append({"role": m.role, "content": blocks})
+    payload: Dict[str, Any] = {"model": req.model, "messages": messages}
+    if system_text:
+        payload["system"] = system_text
     if req.max_tokens is not None:
         payload["max_tokens"] = req.max_tokens
     if req.temperature is not None:
@@ -53,22 +55,15 @@ class AnthropicProvider(ChatProvider):
 
         # Normalize minimal response
         model = data.get("model", req.model)
-        content = ""
         blocks = data.get("content") or []
-        if isinstance(blocks, list) and blocks:
-            # Newer API returns list of blocks with type "text"
-            pieces = []
-            for b in blocks:
-                if isinstance(b, dict) and b.get("type") == "text":
-                    t = b.get("text")
-                    if isinstance(t, str):
-                        pieces.append(t)
-            content = "".join(pieces)
+        parts = parts_from_anthropic_content(blocks if isinstance(blocks, list) else [])
+        content = "".join([p.text for p in parts if getattr(p, "type", None) == "text"]) or ""
         stop_reason = data.get("stop_reason")
         return {
             "provider": self.name,
             "model": model,
             "content": content,
+            "content_parts": [p.model_dump() for p in parts],
             "stop_reason": stop_reason,
         }
 

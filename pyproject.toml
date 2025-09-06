@@ -3,9 +3,9 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "llm-proxy"
+name = "nexus"
 version = "0.1.0"
-description = "FastAPI proxy for OpenAI and Anthropic with streaming"
+description = "FastAPI proxy for OpenAI, Anthropic, and Gemini with streaming"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "LLM Proxy" }]

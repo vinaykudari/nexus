@@ -29,15 +29,24 @@ async def get_async_client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def require_api_key(
+    provider: "ProviderName",  # pulled from path param
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    if not x_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-API-Key header",
-        )
-    return x_api_key
+    # Prefer header if present; otherwise fall back to env-configured key per provider
+    if x_api_key:
+        return x_api_key
+    # Fallbacks from environment via settings
+    if provider == "openai" and settings.openai_api_key:
+        return settings.openai_api_key
+    if provider == "anthropic" and settings.anthropic_api_key:
+        return settings.anthropic_api_key
+    if provider == "gemini" and settings.gemini_api_key:
+        return settings.gemini_api_key
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing API key: provide 'X-API-Key' header or set PROVIDER env (OPENAI_API_KEY | ANTHROPIC_API_KEY | GEMINI_API_KEY)",
+    )
 
 
-ProviderName = Literal["openai", "anthropic"]
-
+ProviderName = Literal["openai", "anthropic", "gemini"]

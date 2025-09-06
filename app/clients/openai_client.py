@@ -6,6 +6,7 @@ import httpx
 
 from ..config import settings
 from ..models import ChatRequest
+from ..utils.content import normalize_message_content, to_openai_message_content, parts_from_openai_message
 from .base import ChatProvider
 
 
@@ -14,10 +15,13 @@ class OpenAIProvider(ChatProvider):
 
     async def chat(self, api_key: str, req: ChatRequest) -> Dict[str, Any]:
         url = f"{settings.openai_base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": req.model,
-            "messages": [m.model_dump() for m in req.messages],
-        }
+        payload: Dict[str, Any] = {"model": req.model, "messages": []}
+        for m in req.messages:
+            parts = normalize_message_content(m.content)
+            payload["messages"].append({
+                "role": m.role,
+                "content": to_openai_message_content(parts),
+            })
         if req.max_tokens is not None:
             payload["max_tokens"] = req.max_tokens
         if req.temperature is not None:
@@ -29,22 +33,27 @@ class OpenAIProvider(ChatProvider):
         data = resp.json()
 
         # Normalize minimal response
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        message = data.get("choices", [{}])[0].get("message", {})
+        parts = parts_from_openai_message(message)
+        content = "".join([p.text for p in parts if getattr(p, "type", None) == "text"]) or message.get("content", "")
         stop_reason = data.get("choices", [{}])[0].get("finish_reason")
         return {
             "provider": self.name,
             "model": data.get("model", req.model),
             "content": content,
+            "content_parts": [p.model_dump() for p in parts],
             "stop_reason": stop_reason,
         }
 
     async def stream(self, api_key: str, req: ChatRequest) -> AsyncIterator[bytes]:
         url = f"{settings.openai_base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": req.model,
-            "messages": [m.model_dump() for m in req.messages],
-            "stream": True,
-        }
+        payload: Dict[str, Any] = {"model": req.model, "messages": [], "stream": True}
+        for m in req.messages:
+            parts = normalize_message_content(m.content)
+            payload["messages"].append({
+                "role": m.role,
+                "content": to_openai_message_content(parts),
+            })
         if req.max_tokens is not None:
             payload["max_tokens"] = req.max_tokens
         if req.temperature is not None:
@@ -57,4 +66,3 @@ class OpenAIProvider(ChatProvider):
             async for chunk in r.aiter_bytes():
                 # Pass-through chunks (SSE formatted by OpenAI)
                 yield chunk
-

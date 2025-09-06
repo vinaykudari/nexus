@@ -14,10 +14,15 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_base_url: str = "https://api.anthropic.com/v1"
     anthropic_version: str = "2023-06-01"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+
+    # Optional upstream API keys (fallback when header not provided)
+    openai_api_key: str | None = None  # env: OPENAI_API_KEY
+    anthropic_api_key: str | None = None  # env: ANTHROPIC_API_KEY
+    gemini_api_key: str | None = None  # env: GEMINI_API_KEY
 
     class Config:
         env_file = ".env"
 
 
 settings = Settings()
-
