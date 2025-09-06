@@ -1,0 +1,55 @@
+name: Deploy API
+
+on:
+  push:
+    branches: ["*"]
+  workflow_dispatch:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_IMAGE: vinaykudari/nexus
+      BRANCH_NAME: ${{ github.ref_name }}
+      SERVICE_NAME: awake-lauraine/${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: vinaykudari
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Docker tags
+        id: meta
+        run: |
+          TAGS="${REGISTRY_IMAGE}:${BRANCH_NAME}"
+          if [ "${BRANCH_NAME}" = "main" ]; then
+            TAGS="$TAGS,${REGISTRY_IMAGE}:latest"
+          fi
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Install Koyeb CLI
+        run: |
+          curl -L https://github.com/koyeb/koyeb-cli/releases/download/v5.5.1/koyeb-cli_5.5.1_linux_amd64.tar.gz -o koyeb.tar.gz
+          tar -xzf koyeb.tar.gz
+          sudo mv koyeb /usr/local/bin/koyeb
+
+      - name: Redeploy service on Koyeb
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN_API }}
+        run: |
+          echo "Redeploying ${SERVICE_NAME} with image ${REGISTRY_IMAGE}:${BRANCH_NAME}"
+          # Assumes the Koyeb service ${SERVICE_NAME} is already configured to use this image tag
+          koyeb service redeploy "${SERVICE_NAME}" --token "${KOYEB_TOKEN}"
+
