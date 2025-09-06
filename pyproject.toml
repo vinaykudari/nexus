@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nexus"
+version = "0.1.0"
+description = "FastAPI proxy for OpenAI, Anthropic, and Gemini with streaming"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Nexus" }]
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.3.0",
+  "python-dotenv>=1.0.1",
+  "python-multipart>=0.0.20",
+  "google-genai>=0.3.0",
+  "svglib>=1.5.0",
+  "reportlab>=4.0.0",
+  "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5.4",
+  "mypy>=1.10.0",
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+nexus = "app.main:app"
+
+[tool.uv]
+dev-dependencies = ["nexus[dev]"]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "app/",
+  "README.md",
+  "pyproject.toml",
+]
+exclude = [
+  "*.pyc",
+  "__pycache__/",
+  "*.pyo",
+  "*.pyd",
+  ".Python",
+  "build/",
+  "develop-eggs/",
+  "dist/",
+  "downloads/",
+  "eggs/",
+  ".eggs/",
+  "lib/",
+  "lib64/",
+  "parts/",
+  "sdist/",
+  "var/",
+  "wheels/",
+  "*.egg-info/",
+  ".installed.cfg",
+  "*.egg",
+]
