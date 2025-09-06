@@ -9,7 +9,7 @@ jobs:
   api:
     runs-on: ubuntu-latest
     env:
-      REGISTRY_IMAGE: vinaykudari/nexus
+      DOCKER_NAMESPACE: vinaykudari
       BRANCH_NAME: ${{ github.ref_name }}
       SERVICE_NAME: awake-lauraine/${{ github.ref_name }}
     steps:
@@ -23,14 +23,15 @@ jobs:
           username: vinaykudari
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute Docker tags
+      - name: Compute Docker image and tags
         id: meta
         run: |
-          TAGS="${REGISTRY_IMAGE}:${BRANCH_NAME}"
-          if [ "${BRANCH_NAME}" = "main" ]; then
-            TAGS="$TAGS,${REGISTRY_IMAGE}:latest"
-          fi
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          # Sanitize branch to a valid docker repo component (lowercase, no slashes)
+          SANITIZED=$(echo "${BRANCH_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
+          IMAGE="${DOCKER_NAMESPACE}/${SANITIZED}"
+          TAGS="${IMAGE}:latest"
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Build and push image
         uses: docker/build-push-action@v5
@@ -49,6 +50,6 @@ jobs:
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN_API }}
         run: |
-          echo "Redeploying ${SERVICE_NAME} with image ${REGISTRY_IMAGE}:${BRANCH_NAME}"
+          echo "Redeploying ${SERVICE_NAME} with image ${{ steps.meta.outputs.image }}:latest"
           # Assumes the Koyeb service ${SERVICE_NAME} is already configured to use this image tag
           koyeb service redeploy "${SERVICE_NAME}" --token "${KOYEB_TOKEN}"
