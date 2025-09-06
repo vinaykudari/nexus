@@ -27,8 +27,6 @@ _video_rules_path = Path(__file__).with_name("rules_video.md")
 _video_rules_text = _video_rules_path.read_text(encoding="utf-8") if _video_rules_path.exists() else ""
 
 
-
-
 async def _require_google_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> str:
     if x_api_key:
         return x_api_key
@@ -289,8 +287,6 @@ async def generate_prompt(
         logging.error(f"No text generated from API response: {data_json}")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No instructions generated")
     
-    # SVG conversion logic removed - now relying on direct PNG generation from AI
-    
     # Save generated assets to the request directory and prepare for response
     response_assets = []
     if generated_assets:
@@ -318,7 +314,6 @@ async def generate_prompt(
             
             try:
                 asset_bytes = base64.b64decode(asset["data"])
-                
                 asset_path.write_bytes(asset_bytes)
                 
                 # Include both asset data and path in response
