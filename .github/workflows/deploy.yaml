@@ -11,7 +11,6 @@ jobs:
     env:
       DOCKER_NAMESPACE: vinaykudari
       BRANCH_NAME: ${{ github.ref_name }}
-      SERVICE_NAME: awake-lauraine/${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,15 +22,20 @@ jobs:
           username: vinaykudari
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute Docker image and tags
+      - name: Compute Docker image, service name, and tags
         id: meta
         run: |
           # Sanitize branch to a valid docker repo component (lowercase, no slashes)
           SANITIZED=$(echo "${BRANCH_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
+          # Extract project-name (tail segment of the branch), then sanitize for Koyeb service names
+          RAW_TAIL="${BRANCH_NAME##*/}"
+          PROJECT_NAME=$(echo "${RAW_TAIL}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
           IMAGE="${DOCKER_NAMESPACE}/${SANITIZED}"
           TAGS="${IMAGE}:latest"
+          SERVICE_NAME="awake-lauraine/${PROJECT_NAME}"
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
 
       - name: Build and push image
         uses: docker/build-push-action@v5
@@ -50,6 +54,6 @@ jobs:
         env:
           KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN_API }}
         run: |
-          echo "Redeploying ${SERVICE_NAME} with image ${{ steps.meta.outputs.image }}:latest"
+          echo "Redeploying ${{ steps.meta.outputs.service_name }} with image ${{ steps.meta.outputs.image }}:latest"
           # Assumes the Koyeb service ${SERVICE_NAME} is already configured to use this image tag
-          koyeb service redeploy "${SERVICE_NAME}" --token "${KOYEB_TOKEN}"
+          koyeb service redeploy "${{ steps.meta.outputs.service_name }}" --token "${KOYEB_TOKEN}"
