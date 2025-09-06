@@ -43,7 +43,7 @@ async def apply(
     video_model: str = Form("veo-3.0-fast-generate-001"),
     request_id: str = Form(..., description="Client-supplied request identifier for image grouping"),
     aspect_ratio: Optional[str] = Form(None, alias="aspectRatio", description="Desired aspect ratio, e.g. '16:9' or '1:1'"),
-    number_of_images: int = Form(1, alias="numberOfImages", ge=1, le=8, description="How many images to generate (1-8)"),
+    number_of_images: int = Form(2, alias="numberOfImages", ge=1, le=3, description="How many images to generate (1-8)"),
     api_key: str = Depends(_require_google_api_key),
     client=Depends(get_async_client),
 ):
