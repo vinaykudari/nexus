@@ -11,7 +11,7 @@ jobs:
     env:
       DOCKER_NAMESPACE: vinaykudari
       BRANCH_NAME: ${{ github.ref_name }}
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,22 +23,19 @@ jobs:
         id: meta
         run: |
           if [[ "${BRANCH_NAME}" == "main" ]]; then
-            # For main branch - deploy directly to Cloud Run (no Docker Hub needed)
-            DEPLOY_TARGET="cloudrun"
+            echo "deploy_target=cloudrun" >> $GITHUB_OUTPUT
           else
-            # For hack/* branches - use existing Koyeb naming
             SANITIZED=$(echo "${BRANCH_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
             RAW_TAIL="${BRANCH_NAME##*/}"
             PROJECT_NAME=$(echo "${RAW_TAIL}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
             IMAGE="${DOCKER_NAMESPACE}/${SANITIZED}"
             TAGS="${IMAGE}:latest"
             SERVICE_NAME="awake-lauraine/${PROJECT_NAME}"
-            DEPLOY_TARGET="koyeb"
             echo "image=${IMAGE}" >> $GITHUB_OUTPUT
             echo "tags=${TAGS}" >> $GITHUB_OUTPUT
             echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+            echo "deploy_target=koyeb" >> $GITHUB_OUTPUT
           fi
-          echo "deploy_target=${DEPLOY_TARGET}" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker Hub
         if: steps.meta.outputs.deploy_target == 'koyeb'
@@ -57,7 +54,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Cloud Run deployment steps (only for main branch)
       - name: Authenticate to Google Cloud
         if: steps.meta.outputs.deploy_target == 'cloudrun'
         uses: google-github-actions/auth@v2
@@ -68,19 +64,19 @@ jobs:
         if: steps.meta.outputs.deploy_target == 'cloudrun'
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for GCR
+      - name: Configure Docker for Artifact Registry
         if: steps.meta.outputs.deploy_target == 'cloudrun'
-        run: gcloud auth configure-docker
+        run: gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev"
 
-      - name: Build and push to Google Container Registry
+      - name: Build and push to Artifact Registry
         if: steps.meta.outputs.deploy_target == 'cloudrun'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
-            gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/nexus/nexus:latest
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/nexus/nexus:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -88,7 +84,7 @@ jobs:
         if: steps.meta.outputs.deploy_target == 'cloudrun'
         run: |
           gcloud run deploy nexus \
-            --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest \
+            --image ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/nexus/nexus:latest \
             --platform managed \
             --region ${{ secrets.GCP_REGION }} \
             --allow-unauthenticated \
@@ -99,7 +95,6 @@ jobs:
             --max-instances 5 \
             --set-env-vars "ENV=production"
 
-      # Koyeb deployment steps (only for hack/* branches)
       - name: Install Koyeb CLI
         if: steps.meta.outputs.deploy_target == 'koyeb'
         run: |
