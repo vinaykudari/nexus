@@ -1,0 +1,13 @@
+.venv
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+dist
+build
+*.egg-info
+*.egg
+.DS_Store
+node_modules
+uv.lock

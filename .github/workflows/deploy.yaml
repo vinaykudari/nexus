@@ -1,0 +1,112 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [main, "hack/**"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_NAMESPACE: vinaykudari
+      BRANCH_NAME: ${{ github.ref_name }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Docker image and service metadata
+        id: meta
+        run: |
+          if [[ "${BRANCH_NAME}" == "main" ]]; then
+            # For main branch - use nexus image name for Cloud Run
+            IMAGE="nexus"
+            TAGS="${IMAGE}:latest,${IMAGE}:${{ github.sha }}"
+            DEPLOY_TARGET="cloudrun"
+          else
+            # For hack/* branches - use existing Koyeb naming
+            SANITIZED=$(echo "${BRANCH_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
+            RAW_TAIL="${BRANCH_NAME##*/}"
+            PROJECT_NAME=$(echo "${RAW_TAIL}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._-]+#-#g' | sed -E 's#^-+|-+$##g')
+            IMAGE="${DOCKER_NAMESPACE}/${SANITIZED}"
+            TAGS="${IMAGE}:latest"
+            SERVICE_NAME="awake-lauraine/${PROJECT_NAME}"
+            DEPLOY_TARGET="koyeb"
+            echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+          fi
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "deploy_target=${DEPLOY_TARGET}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Cloud Run deployment steps (only for main branch)
+      - name: Authenticate to Google Cloud
+        if: steps.meta.outputs.deploy_target == 'cloudrun'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        if: steps.meta.outputs.deploy_target == 'cloudrun'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        if: steps.meta.outputs.deploy_target == 'cloudrun'
+        run: gcloud auth configure-docker
+
+      - name: Tag and push to Google Container Registry
+        if: steps.meta.outputs.deploy_target == 'cloudrun'
+        run: |
+          docker tag nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
+          docker tag nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
+
+      - name: Deploy to Cloud Run
+        if: steps.meta.outputs.deploy_target == 'cloudrun'
+        run: |
+          gcloud run deploy nexus \
+            --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest \
+            --platform managed \
+            --region ${{ secrets.GCP_REGION }} \
+            --allow-unauthenticated \
+            --port 8080 \
+            --memory 1Gi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 5 \
+            --set-env-vars "ENV=production"
+
+      # Koyeb deployment steps (only for hack/* branches)
+      - name: Install Koyeb CLI
+        if: steps.meta.outputs.deploy_target == 'koyeb'
+        run: |
+          curl -L https://github.com/koyeb/koyeb-cli/releases/download/v5.5.1/koyeb-cli_5.5.1_linux_amd64.tar.gz -o koyeb.tar.gz
+          tar -xzf koyeb.tar.gz
+          sudo mv koyeb /usr/local/bin/koyeb
+
+      - name: Redeploy service on Koyeb
+        if: steps.meta.outputs.deploy_target == 'koyeb'
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN_API }}
+        run: |
+          echo "Redeploying ${{ steps.meta.outputs.service_name }} with image ${{ steps.meta.outputs.image }}:latest"
+          koyeb service redeploy "${{ steps.meta.outputs.service_name }}" --token "${KOYEB_TOKEN}"

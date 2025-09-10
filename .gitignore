@@ -1,28 +1,5 @@
-<<<<<<< HEAD
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-.env
+assets
 
-# Environments
-.venv/
-.uv/
-.python-version
-
-# Tools
-.ruff_cache/
-.mypy_cache/
-.pytest_cache/
-
-# OS
-.DS_Store
-
-# uv lockfile (optional)
-uv.lock
-=======
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -230,4 +207,3 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
->>>>>>> 3246950f0e06892d2deb948c21162d2cc1223e2e
