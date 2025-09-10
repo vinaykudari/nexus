@@ -30,7 +30,7 @@ jobs:
         run: |
           if [[ "${BRANCH_NAME}" == "main" ]]; then
             # For main branch - use nexus image name for Cloud Run
-            IMAGE="nexus"
+            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/nexus"
             TAGS="${IMAGE}:latest,${IMAGE}:${{ github.sha }}"
             DEPLOY_TARGET="cloudrun"
           else
@@ -75,8 +75,8 @@ jobs:
       - name: Tag and push to Google Container Registry
         if: steps.meta.outputs.deploy_target == 'cloudrun'
         run: |
-          docker tag nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
-          docker tag nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/nexus:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
           docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:latest
           docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/nexus:${{ github.sha }}
 
