@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 from typing import Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath, BackgroundTasks
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Header, status, Path as FPath
 from fastapi.responses import Response, JSONResponse
 from google import genai
 
@@ -40,143 +40,226 @@ async def _require_google_api_key(x_api_key: str | None = Header(default=None, a
 
 @router.post("/apply")
 async def apply(
-    background_tasks: BackgroundTasks,
     prompt: str = Form(...),
     image: UploadFile = File(...),
+    reference_image: Optional[UploadFile] = File(None),
     model: str = Form("gemini-2.5-flash-image-preview"),
-    video_model: str = Form("veo-3.0-fast-generate-001"),
     request_id: str = Form(..., description="Client-supplied request identifier for image grouping"),
     aspect_ratio: Optional[str] = Form(None, alias="aspectRatio", description="Desired aspect ratio, e.g. '16:9' or '1:1'"),
-    number_of_images: int = Form(1, alias="numberOfImages", ge=1, le=3, description="How many images to generate (1-8)"),
     api_key: str = Depends(_require_google_api_key),
-    client=Depends(get_async_client),
 ):
-    # Log request parameters (excluding image data and API key)
-    logging.info(f"/apply endpoint called with parameters: prompt='{prompt}', model={model}, video_model={video_model}, request_id={request_id}, aspect_ratio={aspect_ratio}, number_of_images={number_of_images}, image_filename={image.filename}, image_content_type={image.content_type}")
+    """Apply modifications to an image using AI generation with optional reference image."""
+    
+    # Log request parameters (excluding sensitive data)
+    logging.info(f"/apply endpoint called with parameters: prompt='{prompt}', model={model}, request_id={request_id}")
     
     # Sanitize request_id to avoid path traversal or unsafe characters
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id or ""):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request_id format")
-
-    data = await image.read()
-    if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image upload")
-    b64 = base64.b64encode(data).decode("ascii")
-    mime = image.content_type or "image/png"
-
-    # Build Google Gemini generateContent payload directly to include image generation config
-    # such as numberOfImages and aspectRatio.
-    contents: list[dict] = []
-    if _rules_text:
-        # Gemini's systemInstruction is set separately; keep user content clean
-        pass
-    # User message combining prompt and input image
-    parts: list[dict] = [
-        {"text": prompt},
-        {"inlineData": {"mimeType": mime, "data": b64}},
-    ]
-    contents.append({"role": "user", "parts": parts})
-
-    payload: dict = {"contents": contents}
-    if _rules_text:
-        payload["systemInstruction"] = {"parts": [{"text": _rules_text}]}
-
-    gen_cfg: dict = {}
-    if aspect_ratio:
-        gen_cfg["aspectRatio"] = aspect_ratio
-    if gen_cfg:
-        payload["generationConfig"] = gen_cfg
-
-    # Generate first image immediately
-    url = f"{settings.gemini_base_url}/models/{model}:generateContent"
-    params = {"key": api_key}
-    logging.info(f"Requesting first image from Gemini API")
-    resp = await client.post(url, json=payload, params=params)
-    resp.raise_for_status()
-    data_json = resp.json()
     
-    # Extract first image
-    first_image = None
-    candidates = data_json.get("candidates") or []
-    for cand in candidates:
-        content = cand.get("content") or {}
-        for p in (content.get("parts") or []):
-            inline = p.get("inlineData") if isinstance(p, dict) else None
-            if isinstance(inline, dict):
-                pmime = inline.get("mimeType") or "image/png"
-                pdata = inline.get("data")
-                if isinstance(pdata, str):
-                    try:
-                        first_image = (base64.b64decode(pdata), pmime)
-                        break
-                    except Exception:
-                        continue
-        if first_image:
-            break
-    
-    if not first_image:
-        logging.error(f"No image extracted from API response. Full response: {data_json}")
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No image returned")
-    
-    logging.info(f"Successfully extracted first image")
-
-    # Setup output directory
-    root = Path(__file__).resolve().parents[1]  # repo root
-    out_dir = root / "assets" / "images" / request_id
-    
-    # Clear existing images for this request_id to ensure clean replacement
-    if out_dir.exists():
-        for existing_file in out_dir.glob("*"):
-            if existing_file.is_file():
-                existing_file.unlink()
-    
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    def _ext_for_mime(m: str) -> str:
-        m = (m or "image/png").lower()
-        if m in ("image/jpeg", "image/jpg"):
-            return ".jpg"
-        if m == "image/webp":
-            return ".webp"
-        if m == "image/gif":
-            return ".gif"
-        return ".png"
-
-    # Save original image as "original.{ext}"
-    original_ext = _ext_for_mime(mime)
-    original_path = out_dir / f"original{original_ext}"
-    original_path.write_bytes(data)
-    logging.info(f"Saved original image to {original_path} ({len(data)} bytes, {mime})")
-    
-    # Save first generated image immediately
-    first_bytes, first_mime = first_image
-    ext = _ext_for_mime(first_mime)
-    file_path = out_dir / f"1{ext}"
-    file_path.write_bytes(first_bytes)
-    logging.info(f"Saved first generated image to {file_path} ({len(first_bytes)} bytes, {first_mime})")
-    
-    # If more images requested, generate them in background
-    if number_of_images > 1:
-        background_tasks.add_task(
-            _generate_additional_images,
-            number_of_images - 1,
-            payload,
-            url,
-            params,
-            out_dir,
-            _ext_for_mime,
-            client
+    # Validate image file
+    if not image.content_type or not image.content_type.startswith('image/'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image (JPEG, PNG, WEBP, etc.)"
         )
-        logging.info(f"Scheduled {number_of_images - 1} additional images for background generation")
-
-    # Return the first image immediately
-    return Response(content=first_bytes, media_type=first_mime)
-
+    
+    # Initialize cleanup variables
+    temp_files_to_clean = []
+    uploaded_files_to_clean = []
+    genai_client = None
+    
+    try:
+        # Read and validate main image data
+        try:
+            main_image_data = await image.read()
+            if not main_image_data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Empty image file"
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to read image file: {str(e)}"
+            )
+        
+        # Initialize Google genai client
+        genai_client = genai.Client(api_key=api_key)
+        
+        # Create temporary file for main image
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{image.filename.split('.')[-1] if image.filename else 'png'}") as temp_file:
+            temp_file.write(main_image_data)
+            main_image_temp_path = temp_file.name
+        temp_files_to_clean.append(main_image_temp_path)
+        
+        # Upload main image to Google File API
+        logging.info("Uploading main image file to Google File API")
+        uploaded_main_image = genai_client.files.upload(file=main_image_temp_path)
+        uploaded_files_to_clean.append(uploaded_main_image)
+        
+        # Construct content parts starting with rules + prompt and main image
+        enhanced_prompt = f"{_rules_text}\n\n{prompt}" if _rules_text else prompt
+        content_parts = [enhanced_prompt, uploaded_main_image]
+        
+        # Process reference image if provided
+        if reference_image:
+            try:
+                ref_image_data = await reference_image.read()
+                if ref_image_data:
+                    # Validate reference image
+                    if not reference_image.content_type or not reference_image.content_type.startswith('image/'):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Reference file must be an image (JPEG, PNG, WEBP, etc.)"
+                        )
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{reference_image.filename.split('.')[-1] if reference_image.filename else 'png'}") as temp_file:
+                        temp_file.write(ref_image_data)
+                        ref_image_temp_path = temp_file.name
+                    temp_files_to_clean.append(ref_image_temp_path)
+                    
+                    logging.info("Uploading reference image file to Google File API")
+                    uploaded_ref_image = genai_client.files.upload(file=ref_image_temp_path)
+                    uploaded_files_to_clean.append(uploaded_ref_image)
+                    
+                    # Insert reference image into content parts
+                    content_parts.insert(1, "Use this image as a reference:")
+                    content_parts.insert(2, uploaded_ref_image)
+            except Exception as e:
+                logging.warning(f"Failed to process reference image: {e}")
+        
+        # Handle aspect ratio validation and prompt modification
+        generation_config = {}
+        if aspect_ratio:
+            supported_ratios = ["1:1", "16:9", "9:16"]
+            if aspect_ratio not in supported_ratios:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unsupported aspectRatio: '{aspect_ratio}'. Supported values are {', '.join(supported_ratios)}."
+                )
+            # Modify enhanced prompt to include aspect ratio instruction
+            content_parts[0] = f"{enhanced_prompt} in {aspect_ratio} aspect ratio"
+            logging.info(f"Applying aspect ratio: {aspect_ratio} via prompt modification")
+        
+        # Generate content using Google Generative AI
+        logging.info(f"Generating image using {model}")
+        
+        response = genai_client.models.generate_content(
+            model=model,
+            contents=content_parts
+        )
+        
+        if not response.candidates:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No response candidates generated"
+            )
+        
+        # Helper function for file extensions
+        def _ext_for_mime(m: str) -> str:
+            m = (m or "image/png").lower()
+            if m in ("image/jpeg", "image/jpg"):
+                return ".jpg"
+            if m == "image/webp":
+                return ".webp"
+            if m == "image/gif":
+                return ".gif"
+            return ".png"
+        
+        # Setup output directory
+        root = Path(__file__).resolve().parents[1]
+        out_dir = root / "assets" / "images" / request_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Clear existing files for this request_id to ensure clean replacement
+        if out_dir.exists():
+            for existing_file in out_dir.glob("*"):
+                if existing_file.is_file():
+                    existing_file.unlink()
+        
+        # Save original image
+        original_ext = _ext_for_mime(image.content_type)
+        original_path = out_dir / f"original{original_ext}"
+        original_path.write_bytes(main_image_data)
+        logging.info(f"Saved original image to {original_path}")
+        
+        # Process first candidate and extract image
+        first_image_bytes, first_image_mime = None, None
+        candidate = response.candidates[0]
+        
+        if candidate.content and candidate.content.parts:
+            # Iterate through all parts to find the image
+            for part in candidate.content.parts:
+                if hasattr(part, 'file_data') and part.file_data and hasattr(part.file_data, 'file_uri'):
+                    # Handle FileData response
+                    file_response = genai_client.files.get(name=part.file_data.file_uri.split('/')[-1])
+                    temp_image_path = f"/tmp/{file_response.name}"
+                    file_response.download(file=temp_image_path)
+                    with open(temp_image_path, "rb") as f:
+                        first_image_bytes = f.read()
+                    first_image_mime = file_response.mime_type
+                    os.unlink(temp_image_path)  # Clean up temp download
+                    break
+                elif hasattr(part, 'inline_data') and part.inline_data:
+                    # Handle inline data response (more common format)
+                    first_image_bytes = part.inline_data.data
+                    first_image_mime = part.inline_data.mime_type
+                    break
+                elif hasattr(part, 'blob') and part.blob and hasattr(part.blob, 'data'):
+                    # Handle inline Blob response (fallback)
+                    first_image_bytes = part.blob.data
+                    first_image_mime = part.blob.mime_type
+                    break
+        
+        if not first_image_bytes:
+            logging.error(f"No image extracted from API response. Full response: {response}")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No image returned from generation"
+            )
+        
+        # Save generated image
+        ext = _ext_for_mime(first_image_mime)
+        file_path = out_dir / f"1{ext}"
+        file_path.write_bytes(first_image_bytes)
+        logging.info(f"Saved generated image to {file_path} ({len(first_image_bytes)} bytes)")
+        
+        # Return the generated image
+        return Response(content=first_image_bytes, media_type=first_image_mime)
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logging.error(f"Error during image generation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Image generation failed: {str(e)}"
+        )
+    
+    finally:
+        # Clean up temporary files
+        for path in temp_files_to_clean:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception as e:
+                    logging.warning(f"Failed to clean up temp file {path}: {e}")
+        
+        # Clean up uploaded files from Google
+        if genai_client:
+            for uploaded_file in uploaded_files_to_clean:
+                try:
+                    genai_client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    logging.warning(f"Failed to clean up uploaded file {uploaded_file.name}: {e}")
 
 @router.post("/prompt")
 async def generate_prompt(
     request_id: str = Form(..., description="Request ID of already generated images"),
     image_id: int = Form(1, description="Image ID to analyze (defaults to 1)"),
+    model: str = Form("gemini-2.5-flash-image-preview", description="Model to use for prompt generation"),
     api_key: str = Depends(_require_google_api_key),
     client=Depends(get_async_client),
 ):
@@ -256,8 +339,6 @@ async def generate_prompt(
         }
     }
     
-    # Use Gemini 2.5 Flash Image for image generation capability
-    model = "gemini-2.5-flash-image-preview"
     url = f"{settings.gemini_base_url}/models/{model}:generateContent"
     params = {"key": api_key}
     
@@ -345,73 +426,6 @@ async def generate_prompt(
         "assets": response_assets
     })
 
-
-async def _generate_additional_images(
-    count: int,
-    payload: dict,
-    url: str,
-    params: dict,
-    out_dir: Path,
-    ext_for_mime_func,
-    client
-):
-    """Generate additional images in background and save them to disk."""
-    try:
-        # Create concurrent tasks for remaining images
-        tasks = []
-        for i in range(count):
-            task = asyncio.create_task(_generate_single_image(payload, url, params, client))
-            tasks.append(task)
-        
-        # Wait for all tasks to complete
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Save successful results
-        saved_count = 0
-        for i, result in enumerate(results, start=2):  # Start from 2 since 1 is already saved
-            if isinstance(result, Exception):
-                logging.error(f"Failed to generate image {i}: {result}")
-                continue
-            
-            if result:
-                image_bytes, mime_type = result
-                ext = ext_for_mime_func(mime_type)
-                file_path = out_dir / f"{i}{ext}"
-                file_path.write_bytes(image_bytes)
-                saved_count += 1
-                logging.info(f"Saved background image {i} to {file_path} ({len(image_bytes)} bytes, {mime_type})")
-        
-        logging.info(f"Background generation completed: {saved_count}/{count} additional images saved")
-        
-    except Exception as e:
-        logging.error(f"Error in background image generation: {e}")
-
-
-async def _generate_single_image(payload: dict, url: str, params: dict, client) -> tuple[bytes, str] | None:
-    """Generate a single image and return the bytes and mime type."""
-    try:
-        resp = await client.post(url, json=payload, params=params)
-        resp.raise_for_status()
-        data_json = resp.json()
-        
-        # Extract image from response
-        candidates = data_json.get("candidates") or []
-        for cand in candidates:
-            content = cand.get("content") or {}
-            for p in (content.get("parts") or []):
-                inline = p.get("inlineData") if isinstance(p, dict) else None
-                if isinstance(inline, dict):
-                    pmime = inline.get("mimeType") or "image/png"
-                    pdata = inline.get("data")
-                    if isinstance(pdata, str):
-                        try:
-                            return (base64.b64decode(pdata), pmime)
-                        except Exception:
-                            continue
-        return None
-    except Exception as e:
-        logging.error(f"Failed to generate single image: {e}")
-        return None
 
 
 @router.post("/to-html")

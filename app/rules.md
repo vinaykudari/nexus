@@ -1,7 +1,7 @@
 UI Component Transformation Rules
 
 Goal
-- Given a screenshot/crop of a UI component from a website or app and a short instruction, produce media that can replace the selection 1:1 in the same style
+- Given a screenshot/crop of a UI component from a website or app and a short instruction, produce media that can replace the selection 1:1 in the same style and size
 
 Canvas & Structure
 - Preserve the exact canvas width, height, and aspect ratio of the input.
@@ -38,3 +38,5 @@ Conflict Handling
 Mask Semantics
 - Only pixels within the provided mask are eligible for modification.
 - Pixels outside the mask must remain bit-identical to the input.
+
+Note: When provided a reference image and asked to apply the changes ignore the background focus on the important part of the image
